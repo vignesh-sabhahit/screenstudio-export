@@ -58,9 +58,13 @@ headline option — an image the user supplies to frame/background their video.
 Work dir: create one under the session scratchpad. All scripts live in `scripts/`
 next to this file. Prereqs: ffmpeg 8+, python3 + PIL (`brew install ffmpeg`, `pip install pillow`).
 
+**Fast path:** `./export.sh [-o DIR] <bundle>... [-- prepare_render flags]` runs steps 1–5
+below end to end (incl. multi-session merge and speed changes) and writes `DIR/<name>.mp4`.
+Use the manual steps when you need to preview, tune, or debug.
+
 1. **Inspect** — `python3 scripts/inspect_bundle.py <bundle>`. Read the WARNINGS
    section aloud to the user (VFR, silent system audio, wallpaper-not-in-bundle,
-   timeScale, multi-scene…). Confirm variables (esp. frame picture) if the user
+   multi-session, multi-scene…). Confirm variables (esp. frame picture) if the user
    hasn't specified them.
 
 2. **Raw extraction first (guaranteed win)** — stream-copy before anything fancy:
@@ -70,7 +74,9 @@ next to this file. Prereqs: ffmpeg 8+, python3 + PIL (`brew install ffmpeg`, `pi
    ```
    h264+aac stream-copies clean; only re-encode if codecs are exotic.
 
-3. **Prepare** — `python3 scripts/prepare_render.py --bundle … --work … [flags]`.
+3. **Prepare** — if the bundle has several sessions (paused/resumed recording), first run
+   `python3 scripts/merge_sessions.py --bundle … --work …` and use the bundle path it prints.
+   Then `python3 scripts/prepare_render.py --bundle … --work … [flags]`.
    Emits assets, filtergraphs, `render_preview.sh` / `render_full.sh` /
    `audio_build.sh` / `mux.sh`, and `plan.json` (geometry, zoom→target table,
    verify points, warnings). Sanity-check the zoom table: targets should be spread
@@ -133,5 +139,5 @@ next to this file. Prereqs: ffmpeg 8+, python3 + PIL (`brew install ffmpeg`, `pi
 - Zoom easing: smoothstep ≈ Screen Studio's proprietary damped spring (close; no overshoot).
 - Cursor easing: lerp + EMA ≈ SS's spring smoothing; ripple is a generic expanding ring.
 - Motion blur on zoom/pan: skipped. Captions (`showTranscript`): no transcript in bundle.
-- Slice `timeScale` ≠ 1 (speed ramps): not implemented — warn.
+- Slice `timeScale` ≠ 1: applied per slice (setpts/atempo); speed switches instantly, no easing.
 - macOS system wallpaper backgrounds: not in bundle — substituted.

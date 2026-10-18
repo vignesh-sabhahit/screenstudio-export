@@ -76,9 +76,14 @@ def main():
     meta = json.load(open(os.path.join(rec, "metadata.json")))
     chans = {r["id"]: r for r in meta["recorders"]}
 
+    def media(rid, ext):
+        """Session-0 media file of a channel (merge_sessions.py renames merged media)."""
+        sess = (chans[rid].get("sessions") or [{}])[0]
+        return os.path.join(rec, sess.get("outputFilename") or f"{rid}-0{ext}")
+
     disp_id = next(i for i, r in chans.items() if r.get("type") == "display")
     disp_sess = chans[disp_id]["sessions"][0]
-    display = os.path.join(rec, disp_id + "-0.m3u8")
+    display = media(disp_id, ".m3u8")
     dp = probe_video(display)
     SRC_W, SRC_H = dp["w"], dp["h"]
     num, _, den = dp["r"].partition("/")
@@ -105,7 +110,7 @@ def main():
     cam_id = next((i for i, r in chans.items()
                    if r.get("type") == "camera" or "webcam" in i), None)
     use_cam = (a.webcam == "on") or (a.webcam == "auto" and cam_id and not cfg.get("hideCamera"))
-    webcam = os.path.join(rec, cam_id + "-0.m3u8") if cam_id else None
+    webcam = media(cam_id, ".m3u8") if cam_id else None
     if use_cam and not cam_id:
         warnings.append("webcam requested but no channel found; disabled")
         use_cam = False
@@ -113,8 +118,8 @@ def main():
     # audio choice
     mic_id = next((i for i, r in chans.items() if r.get("type") == "microphone"), None)
     sys_id = next((i for i, r in chans.items() if r.get("type") == "systemAudio"), None)
-    mic = os.path.join(rec, mic_id + "-0.m4a") if mic_id else None
-    sysa = os.path.join(rec, sys_id + "-0.m4a") if sys_id else None
+    mic = media(mic_id, ".m4a") if mic_id else None
+    sysa = media(sys_id, ".m4a") if sys_id else None
     enhanced = None
     enh_dir = os.path.join(rec, "enhanced")
     if os.path.isdir(enh_dir):
@@ -158,11 +163,10 @@ def main():
 
     # ---- slices ----
     slices = scene.get("slices") or [{"sourceStartMs": 0, "sourceEndMs": DUR * 1000, "timeScale": 1}]
-    for s in slices:
-        if s.get("timeScale", 1) != 1:
-            warnings.append(f"slice timeScale={s['timeScale']} unsupported; treated as 1.0")
-    seg = [(s["sourceStartMs"] / 1000.0, s["sourceEndMs"] / 1000.0) for s in slices]
-    out_dur = sum(b - c for c, b in seg)
+    # timeScale is the slice's duration multiplier: 0.5 plays it 2x faster
+    seg = [(s["sourceStartMs"] / 1000.0, s["sourceEndMs"] / 1000.0, s.get("timeScale") or 1)
+           for s in slices]
+    out_dur = sum((b - c) * k for c, b, k in seg)
 
     # ---- assets ----
     def rounded(w, h, r):
@@ -296,8 +300,8 @@ def main():
         last = "comp"
 
     cut = [f"[{last}]split={len(seg)}" + "".join(f"[s{i}]" for i in range(len(seg)))]
-    for i, (c, b) in enumerate(seg):
-        cut.append(f"[s{i}]trim={c:.6f}:{b:.6f},setpts=PTS-STARTPTS[v{i}]")
+    for i, (c, b, k) in enumerate(seg):
+        cut.append(f"[s{i}]trim={c:.6f}:{b:.6f},setpts=(PTS-STARTPTS)*{k}[v{i}]")
     cut.append("".join(f"[v{i}]" for i in range(len(seg))) + f"concat=n={len(seg)}:v=1:a=0[vout]")
 
     fg = ";\n".join(head + comp + cut)
@@ -354,27 +358,45 @@ echo PREVIEW_EXIT=$?
     asrc2 = f'-i "{sysa}"' if audio_mode == "mic+system" else ""
     n = len(seg)
     achain = [f"[0:a]asplit={n}" + "".join(f"[x{i}]" for i in range(n))]
-    for i, (c, b) in enumerate(seg):
-        achain.append(f"[x{i}]atrim={c:.6f}:{b:.6f},asetpts=PTS-STARTPTS[a{i}]")
+    def atempo(speed):
+        """atempo takes 0.5..100 per instance; chain halves for slower slow-motion."""
+        parts = []
+        while speed < 0.5:
+            parts.append(0.5)
+            speed /= 0.5
+        if speed != 1:
+            parts.append(speed)
+        return "".join(f",atempo={p:.6f}" for p in parts)
+
+    for i, (c, b, k) in enumerate(seg):
+        tempo = atempo(1 / k)
+        achain.append(f"[x{i}]atrim={c:.6f}:{b:.6f},asetpts=PTS-STARTPTS{tempo}[a{i}]")
     achain.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[cut]")
     if audio_mode == "mic+system":
         achain[0] = f"[0:a][1:a]amix=inputs=2:duration=first[mx];[mx]asplit={n}" + \
                     "".join(f"[x{i}]" for i in range(n))
     tail = f"[cut]{CLEAN}[out]" if CLEAN else "[cut]anull[out]"
     achain.append(tail)
+    if voice_src and os.path.exists(voice_src):
+        audio_cmd = f"""ffmpeg -hide_banner -y -i "{voice_src}" {asrc2} \\
+  -filter_complex "{';'.join(achain)}" \\
+  -map "[out]" -c:a aac -b:a 192k voice.m4a"""
+        mux_cmd = (f'ffmpeg -hide_banner -y -i video_only.mp4 -i voice.m4a \\\n'
+                   f'  -map 0:v:0 -map 1:a:0 -c copy -movflags +faststart -shortest "{out_mp4}"')
+    else:
+        warnings.append("no audio recorded; output is silent")
+        audio_cmd = "echo 'no audio track; skipping'"
+        mux_cmd = f'cp video_only.mp4 "{out_mp4}"'
     open(f"{work}/audio_build.sh", "w").write(f"""#!/bin/zsh
 set -e
 cd "{work}"
-ffmpeg -hide_banner -y -i "{voice_src}" {asrc2} \\
-  -filter_complex "{';'.join(achain)}" \\
-  -map "[out]" -c:a aac -b:a 192k voice.m4a
+{audio_cmd}
 echo AUDIO_EXIT=$?
 """)
     open(f"{work}/mux.sh", "w").write(f"""#!/bin/zsh
 set -e
 cd "{work}"
-ffmpeg -hide_banner -y -i video_only.mp4 -i voice.m4a \\
-  -map 0:v:0 -map 1:a:0 -c copy -movflags +faststart -shortest "{out_mp4}"
+{mux_cmd}
 echo MUX_EXIT=$?  OUTPUT="{out_mp4}"
 """)
     for f in ("render_full.sh", "render_preview.sh", "audio_build.sh", "mux.sh"):
@@ -383,11 +405,11 @@ echo MUX_EXIT=$?  OUTPUT="{out_mp4}"
     # verification points: src times inside slices mapped to output times
     ver = []
     acc = 0.0
-    for (c, b) in seg:
+    for (c, b, k) in seg:
         for frac in (0.3, 0.7):
             st = c + (b - c) * frac
-            ver.append({"src_t": round(st, 2), "out_t": round(acc + (st - c), 2)})
-        acc += b - c
+            ver.append({"src_t": round(st, 2), "out_t": round(acc + (st - c) * k, 2)})
+        acc += (b - c) * k
     ver = ver[:4]
 
     plan = {"bundle": bundle, "output": out_mp4, "work": work,

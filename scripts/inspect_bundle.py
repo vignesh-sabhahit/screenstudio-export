@@ -45,7 +45,8 @@ def main(bundle):
         rid = r.get("id", "?")
         sess = (r.get("sessions") or [{}])[0]
         if len(r.get("sessions") or []) > 1:
-            warnings.append(f"{rid}: multiple sessions; only session 0 handled.")
+            warnings.append(f"{rid}: {len(r['sessions'])} sessions; run merge_sessions.py first "
+                            "(export.sh does this) or only session 0 is rendered.")
         channels[rid] = {"recorder": r, "session": sess}
         print(f"- {rid} (type={r.get('type')})")
 
@@ -125,8 +126,6 @@ def main(bundle):
     print(f"\n=== scene ===\n  slices: {len(slices)}")
     for s in slices:
         print(f"    {s['sourceStartMs']/1000:.2f}s -> {s['sourceEndMs']/1000:.2f}s  timeScale={s.get('timeScale',1)}")
-        if s.get("timeScale", 1) != 1:
-            warnings.append(f"slice {s.get('id')} timeScale={s['timeScale']}: speed ramps NOT implemented (treated as 1.0).")
     print(f"  zoomRanges (enabled): {len(zooms)}")
     for z in zooms[:20]:
         print(f"    {z['startTime']/1000:.2f}-{z['endTime']/1000:.2f}s zoom={z['zoom']} type={z['type']}")

@@ -23,19 +23,28 @@ A `.screenstudio` file is a macOS package (a directory) containing everything Sc
 ```bash
 git clone https://github.com/vignesh-sabhahit/screenstudio-export
 cd screenstudio-export
-# requirements: python3 + pillow, ffmpeg 8+  (brew install ffmpeg; pip3 install pillow)
+brew install ffmpeg && pip3 install pillow     # one-time requirements
 
-# 1. inspect the bundle (channels, effects, warnings)
-python3 scripts/inspect_bundle.py ~/Recordings/MyDemo.screenstudio
+./export.sh ~/Recordings/MyDemo.screenstudio
+```
 
-# 2. prepare the render (assets, filtergraphs, runnable steps)
-python3 scripts/prepare_render.py --bundle ~/Recordings/MyDemo.screenstudio --work ./work
+That's it. The MP4 lands in `~/Movies/Screen Studio Exports/MyDemo.mp4`, with your cuts, zooms,
+speed changes and cursor. Export several projects at once, or pick the output folder:
 
-# 3. build the animated cursor layer (optional but recommended)
-python3 scripts/cursor_layer.py --bundle ~/Recordings/MyDemo.screenstudio --work ./work
+```bash
+./export.sh -o ~/Desktop/videos ~/Recordings/*.screenstudio
+./export.sh ~/Recordings/MyDemo.screenstudio -- --frame sunset.jpg   # render options after --
+```
 
-# 4. render → final mp4
-zsh work/render_preview.sh    # 9-second preview — check it first
+`export.sh` checks the requirements, then runs each step for you and cleans up its temp files
+(`--keep-work` keeps them, e.g. to debug). The steps, if you want to run them by hand:
+
+```bash
+python3 scripts/inspect_bundle.py MyDemo.screenstudio           # what's inside, warnings
+python3 scripts/merge_sessions.py --bundle MyDemo.screenstudio --work ./work   # join paused/resumed parts; prints bundle to use
+python3 scripts/prepare_render.py --bundle <that bundle> --work ./work
+python3 scripts/cursor_layer.py   --bundle <that bundle> --work ./work
+zsh work/render_preview.sh    # optional 9-second preview
 zsh work/render_full.sh && zsh work/audio_build.sh && zsh work/mux.sh
 ```
 
@@ -52,6 +61,8 @@ ffmpeg -i MyDemo.screenstudio/recording/channel-2-display-0.m3u8 \
 | Effect | Status |
 |---|---|
 | Cuts / trims (`slices`) | ✅ exact |
+| Speed changes (slice `timeScale`) | ✅ each slice sped up/slowed down; changes are instant, not eased |
+| Paused/resumed recordings (multiple sessions) | ✅ parts joined in order |
 | Click-following zooms (`zoomRanges`) | ✅ targets from your real click data; smoothstep easing (≈ the app's spring) |
 | Animated cursor | ✅ rendered from mouse telemetry + the bundle's own cursor sprites, hotspot-accurate |
 | Click ripples | ✅ expanding-ring on every click |
@@ -75,6 +86,8 @@ ffmpeg -i MyDemo.screenstudio/recording/channel-2-display-0.m3u8 \
 - **Archival** — get the source media out before deleting projects.
 
 ## User variables
+
+Pass these to `export.sh` after `--`, or to `prepare_render.py` directly.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -127,7 +140,7 @@ Honesty over hype — versus the app's export:
 
 - Zoom easing is smoothstep, an approximation of the app's proprietary damped-spring curve (close; no overshoot).
 - Cursor smoothing is lerp + EMA, not the app's spring; the click ripple is a generic expanding ring.
-- No motion blur on zoom/pan. No captions (the transcript isn't stored in the bundle). Slice speed-ramps (`timeScale ≠ 1`) unsupported.
+- No motion blur on zoom/pan. No captions (the transcript isn't stored in the bundle). Speed changes switch instantly at slice boundaries.
 - macOS system-wallpaper backgrounds aren't shipped inside bundles — substitute any image via `--frame`.
 
 ## Requirements
